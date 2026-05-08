@@ -26,15 +26,16 @@ mkdir -p $COMFY_MODELS/loras
 mkdir -p $COMFY_MODELS/upscale_models
 
 # ─────────────────────────────────
-# 2. 모델 다운로드 (순차)
+# 2. 모델 다운로드 (병렬, XET 비활성화)
 # ─────────────────────────────────
-echo "[2/5] 모델 다운로드 시작 (시간 소요됨)..."
+echo "[2/5] 모델 다운로드 시작 (병렬)..."
 
 python3 << 'PYEOF'
 import os
 os.environ["HF_HUB_DISABLE_XET"] = "1"
 
 from huggingface_hub import hf_hub_download
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 downloads = [
     ('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors', '/workspace/ComfyUI/models/diffusion_models'),
@@ -49,9 +50,21 @@ downloads = [
     ('lightx2v/Wan2.2-Distill-Loras', 'wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors', '/workspace/ComfyUI/models/loras'),
 ]
 
-for repo, filename, local_dir in downloads:
-    print(f"  → {filename.split('/')[-1]}")
+def download(args):
+    repo, filename, local_dir = args
+    name = filename.split('/')[-1]
+    print(f"  → {name}")
     hf_hub_download(repo_id=repo, filename=filename, local_dir=local_dir)
+    print(f"  ✓ {name}")
+
+with ThreadPoolExecutor(max_workers=4) as executor:
+    futures = {executor.submit(download, d): d for d in downloads}
+    for future in as_completed(futures):
+        try:
+            future.result()
+        except Exception as e:
+            repo, filename, _ = futures[future]
+            print(f"  ✗ 실패: {filename.split('/')[-1]} — {e}")
 
 print("HuggingFace 다운로드 완료")
 PYEOF
