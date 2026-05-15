@@ -70,10 +70,18 @@ with ThreadPoolExecutor(max_workers=4) as executor:
 print("HuggingFace 다운로드 완료")
 PYEOF
 
+# 업스케일 모델
 echo "  → RealESRGAN_x4plus.pth"
-wget -q --show-progress \
-    -O $COMFY_MODELS/upscale_models/RealESRGAN_x4plus.pth \
+wget -q --show-progress -O $COMFY_MODELS/upscale_models/RealESRGAN_x4plus.pth \
     "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth"
+
+echo "  → 4xUltraSharp.pth"
+wget -q --show-progress -O $COMFY_MODELS/upscale_models/4xUltraSharp.pth \
+    "https://huggingface.co/Kim2091/UltraSharp/resolve/main/4x-UltraSharp.pth"
+
+echo "  → 4xNMKD-Superscale.pth"
+wget -q --show-progress -O $COMFY_MODELS/upscale_models/4xNMKD-Superscale.pth \
+    "https://huggingface.co/uwg/upscaler/resolve/main/ESRGAN/4x_NMKD-Superscale-SP_178000_G.pth"
 
 echo "[2/5] 다운로드 완료"
 
@@ -93,6 +101,8 @@ ln -sf $COMFY_MODELS/clip_vision/split_files/clip_vision/clip_vision_h.safetenso
 ln -sf $COMFY_MODELS/loras/wan2.2_i2v_A14b_high_noise_lora_rank64_lightx2v_4step_1022.safetensors $SLIM_MODELS/loras/
 ln -sf $COMFY_MODELS/loras/wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors $SLIM_MODELS/loras/
 ln -sf $COMFY_MODELS/upscale_models/RealESRGAN_x4plus.pth $SLIM_MODELS/upscale_models/
+ln -sf $COMFY_MODELS/upscale_models/4xUltraSharp.pth $SLIM_MODELS/upscale_models/
+ln -sf $COMFY_MODELS/upscale_models/4xNMKD-Superscale.pth $SLIM_MODELS/upscale_models/
 
 echo "[3/5] 심볼릭 링크 완료"
 
