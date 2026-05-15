@@ -4,8 +4,6 @@
 
 set -e
 
-export HF_HUB_DISABLE_XET=1
-
 COMFY_MODELS="/workspace/ComfyUI/models"
 SLIM_MODELS="/workspace/runpod-slim/ComfyUI/models"
 CUSTOM_NODES="/workspace/runpod-slim/ComfyUI/custom_nodes"
@@ -26,15 +24,19 @@ mkdir -p $COMFY_MODELS/loras
 mkdir -p $COMFY_MODELS/upscale_models
 
 # ─────────────────────────────────
-# 2. 모델 다운로드 (순차)
+# 2. 모델 다운로드 (hf_transfer + 병렬)
 # ─────────────────────────────────
-echo "[2/5] 모델 다운로드 시작..."
+echo "[2/5] hf_transfer 설치..."
+pip install hf_transfer -q
+
+echo "[2/5] 모델 다운로드 시작 (병렬)..."
 
 python3 << 'PYEOF'
 import os
-os.environ["HF_HUB_DISABLE_XET"] = "1"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
 from huggingface_hub import hf_hub_download
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 downloads = [
     ('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors', '/workspace/ComfyUI/models/diffusion_models'),
@@ -49,11 +51,21 @@ downloads = [
     ('lightx2v/Wan2.2-Distill-Loras', 'wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors', '/workspace/ComfyUI/models/loras'),
 ]
 
-total = len(downloads)
-for i, (repo, filename, local_dir) in enumerate(downloads, 1):
+def download(args):
+    repo, filename, local_dir = args
     name = filename.split('/')[-1]
-    print(f"  [{i}/{total}] {name}")
+    print(f"  → {name}")
     hf_hub_download(repo_id=repo, filename=filename, local_dir=local_dir)
+    print(f"  ✓ {name}")
+
+with ThreadPoolExecutor(max_workers=4) as executor:
+    futures = {executor.submit(download, d): d for d in downloads}
+    for future in as_completed(futures):
+        try:
+            future.result()
+        except Exception as e:
+            repo, filename, _ = futures[future]
+            print(f"  ✗ 실패: {filename.split('/')[-1]} — {e}")
 
 print("HuggingFace 다운로드 완료")
 PYEOF
@@ -123,7 +135,7 @@ else
 fi
 
 echo "  → diffusers 업그레이드"
-/workspace/runpod-slim/ComfyUI/.venv-cu128/bin/pip install -U diffusers huggingface_hub -q
+/workspace/runpod-slim/ComfyUI/.venv-cu128/bin/pip install -U diffusers huggingface_hub hf_transfer -q
 
 echo "[4/5] 커스텀 노드 설치 완료"
 
