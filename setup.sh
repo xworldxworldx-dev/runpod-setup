@@ -144,6 +144,13 @@ else
     echo "  ✓ ComfyUI-Easy-Use (이미 설치됨)"
 fi
 
+if [ ! -d "ComfyUI-PainterI2VforKJ" ]; then
+    echo "  → ComfyUI-PainterI2VforKJ"
+    git clone https://github.com/princepainter/ComfyUI-PainterI2VforKJ.git
+else
+    echo "  ✓ ComfyUI-PainterI2VforKJ (이미 설치됨)"
+fi
+
 echo "  → diffusers 업그레이드"
 /workspace/runpod-slim/ComfyUI/.venv-cu128/bin/pip install -U diffusers huggingface_hub hf_transfer -q
 
