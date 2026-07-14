@@ -1,12 +1,25 @@
 #!/bin/bash
 # NAU RunPod Setup Script
 # 사용법: bash <(curl -s https://raw.githubusercontent.com/xworldxworldx-dev/runpod-setup/main/setup.sh)
+#
+# [전제조건]
+# - Pod 템플릿: ComfyUI CUDA 13 (runpod-workers/comfyui-base)
+# - GPU: RTX 5090
+# - Container disk: 50GB 이상 (로컬 모델 복사용 — 3.5단계)
+# - Network volume: /workspace 마운트
+#
+# [ComfyUI 워크플로우 권장 설정 (5090 기준)]
+# - Model Loader quantization: fp8_e4m3fn (양쪽)
+# - Sampler force_offload: false (양쪽)
+# - Block Swap blocks_to_swap: 0
+# - fps: 32 / num_frames: 81 / cfg: 1.0 / motion_amplitude: 1.4
 
 set -e
 
 COMFY_MODELS="/workspace/ComfyUI/models"
 SLIM_MODELS="/workspace/runpod-slim/ComfyUI/models"
 CUSTOM_NODES="/workspace/runpod-slim/ComfyUI/custom_nodes"
+LOCAL_MODELS="/root/models_local"
 
 echo "=============================="
 echo " NAU RunPod Setup 시작"
@@ -15,7 +28,7 @@ echo "=============================="
 # ─────────────────────────────────
 # 1. 디렉토리 생성
 # ─────────────────────────────────
-echo "[1/5] 디렉토리 생성..."
+echo "[1/6] 디렉토리 생성..."
 mkdir -p $COMFY_MODELS/diffusion_models
 mkdir -p $COMFY_MODELS/text_encoders
 mkdir -p $COMFY_MODELS/vae
@@ -23,13 +36,22 @@ mkdir -p $COMFY_MODELS/clip_vision
 mkdir -p $COMFY_MODELS/loras
 mkdir -p $COMFY_MODELS/upscale_models
 
+# 타겟(runpod-slim) 디렉토리도 생성 — 템플릿에 따라 없을 수 있음
+mkdir -p $SLIM_MODELS/diffusion_models
+mkdir -p $SLIM_MODELS/text_encoders
+mkdir -p $SLIM_MODELS/vae
+mkdir -p $SLIM_MODELS/clip_vision
+mkdir -p $SLIM_MODELS/loras
+mkdir -p $SLIM_MODELS/upscale_models
+mkdir -p $CUSTOM_NODES
+
 # ─────────────────────────────────
 # 2. 모델 다운로드 (hf_transfer + 병렬)
 # ─────────────────────────────────
-echo "[2/5] hf_transfer 설치..."
-pip install hf_transfer -q
+echo "[2/6] huggingface_hub / hf_transfer 설치..."
+pip install huggingface_hub hf_transfer -q
 
-echo "[2/5] 모델 다운로드 시작 (병렬)..."
+echo "[2/6] 모델 다운로드 시작 (병렬)..."
 
 python3 << 'PYEOF'
 import os
@@ -83,12 +105,12 @@ echo "  → 4xNMKD-Superscale.pth"
 wget -q --show-progress -O $COMFY_MODELS/upscale_models/4xNMKD-Superscale.pth \
     "https://huggingface.co/uwg/upscaler/resolve/main/ESRGAN/4x_NMKD-Superscale-SP_178000_G.pth"
 
-echo "[2/5] 다운로드 완료"
+echo "[2/6] 다운로드 완료"
 
 # ─────────────────────────────────
-# 3. 심볼릭 링크
+# 3. 심볼릭 링크 (network volume 기준)
 # ─────────────────────────────────
-echo "[3/5] 심볼릭 링크 설정..."
+echo "[3/6] 심볼릭 링크 설정..."
 
 ln -sf $COMFY_MODELS/diffusion_models/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors $SLIM_MODELS/diffusion_models/
 ln -sf $COMFY_MODELS/diffusion_models/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors $SLIM_MODELS/diffusion_models/
@@ -104,12 +126,45 @@ ln -sf $COMFY_MODELS/upscale_models/RealESRGAN_x4plus.pth $SLIM_MODELS/upscale_m
 ln -sf $COMFY_MODELS/upscale_models/4xUltraSharp.pth $SLIM_MODELS/upscale_models/
 ln -sf $COMFY_MODELS/upscale_models/4xNMKD-Superscale.pth $SLIM_MODELS/upscale_models/
 
-echo "[3/5] 심볼릭 링크 완료"
+echo "[3/6] 심볼릭 링크 완료"
 
 # ─────────────────────────────────
-# 4. 커스텀 노드 설치
+# 4. 모델 로컬 디스크 복사 (프로젝트 A)
 # ─────────────────────────────────
-echo "[4/5] 커스텀 노드 설치..."
+# 목적: network volume에서 모델 로드 시 3~8분 병목 → 로컬 디스크에서 1초
+# 주의: 컨테이너 디스크는 Pod 종료 시 삭제됨 → Pod 시작마다 이 단계 필요
+#       Container disk 50GB 이상 필요 (Remix 모델 2개 = 27GB)
+echo "[4/6] 모델 로컬 디스크 복사 (로딩 속도 최적화)..."
+
+mkdir -p $LOCAL_MODELS
+
+if [ ! -f "$LOCAL_MODELS/Wan2.2_Remix_NSFW_i2v_14b_high_lighting_v2.0.safetensors" ]; then
+    echo "  → high_lighting 로컬 복사 중... (14GB)"
+    cp $COMFY_MODELS/diffusion_models/NSFW/Wan2.2_Remix_NSFW_i2v_14b_high_lighting_v2.0.safetensors $LOCAL_MODELS/ &
+else
+    echo "  ✓ high_lighting (이미 로컬에 있음)"
+fi
+
+if [ ! -f "$LOCAL_MODELS/Wan2.2_Remix_NSFW_i2v_14b_low_lighting_v2.0.safetensors" ]; then
+    echo "  → low_lighting 로컬 복사 중... (14GB)"
+    cp $COMFY_MODELS/diffusion_models/NSFW/Wan2.2_Remix_NSFW_i2v_14b_low_lighting_v2.0.safetensors $LOCAL_MODELS/ &
+else
+    echo "  ✓ low_lighting (이미 로컬에 있음)"
+fi
+
+wait
+echo "  ✓ 로컬 복사 완료"
+
+# Remix 심볼릭 링크를 로컬 파일로 교체 (3단계의 volume 링크를 덮어씀)
+ln -sf $LOCAL_MODELS/Wan2.2_Remix_NSFW_i2v_14b_high_lighting_v2.0.safetensors $SLIM_MODELS/diffusion_models/
+ln -sf $LOCAL_MODELS/Wan2.2_Remix_NSFW_i2v_14b_low_lighting_v2.0.safetensors $SLIM_MODELS/diffusion_models/
+
+echo "[4/6] 로컬 디스크 최적화 완료 (모델 로딩: 분 단위 → 1초)"
+
+# ─────────────────────────────────
+# 5. 커스텀 노드 설치
+# ─────────────────────────────────
+echo "[5/6] 커스텀 노드 설치..."
 
 cd $CUSTOM_NODES
 
@@ -152,19 +207,35 @@ else
 fi
 
 echo "  → diffusers 업그레이드"
-/workspace/runpod-slim/ComfyUI/.venv-cu128/bin/pip install -U diffusers huggingface_hub hf_transfer -q
+if [ -f "/workspace/runpod-slim/ComfyUI/.venv-cu128/bin/pip" ]; then
+    /workspace/runpod-slim/ComfyUI/.venv-cu128/bin/pip install -U diffusers huggingface_hub hf_transfer -q
+elif [ -f "/workspace/ComfyUI/venv/bin/pip" ]; then
+    /workspace/ComfyUI/venv/bin/pip install -U diffusers huggingface_hub hf_transfer -q
+else
+    pip install -U diffusers huggingface_hub hf_transfer -q
+fi
 
-echo "[4/5] 커스텀 노드 설치 완료"
+echo "[5/6] 커스텀 노드 설치 완료"
 
 # ─────────────────────────────────
-# 5. ComfyUI 재시작
+# 6. ComfyUI 재시작
 # ─────────────────────────────────
-echo "[5/5] ComfyUI 재시작..."
+echo "[6/6] ComfyUI 재시작..."
 kill $(ps aux | grep "python main.py" | grep -v grep | awk '{print $2}') 2>/dev/null || true
 sleep 3
-cd /workspace/runpod-slim/ComfyUI
-source .venv-cu128/bin/activate
-python main.py --listen 0.0.0.0 --port 8188 > /tmp/comfyui.log 2>&1 &
+
+if [ -f "/workspace/runpod-slim/ComfyUI/.venv-cu128/bin/activate" ]; then
+    cd /workspace/runpod-slim/ComfyUI
+    source .venv-cu128/bin/activate
+elif [ -f "/workspace/ComfyUI/venv/bin/activate" ]; then
+    cd /workspace/ComfyUI
+    source venv/bin/activate
+else
+    echo "  ⚠️ 가상환경을 찾지 못함 — ComfyUI 수동 시작 필요"
+    exit 1
+fi
+
+python main.py --listen 0.0.0.0 --port 8188 --enable-cors-header > /tmp/comfyui.log 2>&1 &
 
 sleep 5
 echo ""
@@ -172,4 +243,8 @@ echo "=============================="
 echo " 셋업 완료!"
 echo " 포트 8188 접속 후 Wan22-I2V-Remix.json 드래그 앤 드롭"
 echo " 로그 확인: tail -f /tmp/comfyui.log"
+echo ""
+echo " [ComfyUI 워크플로우 확인사항 - 5090]"
+echo "  quantization: fp8_e4m3fn / force_offload: false"
+echo "  blocks_to_swap: 0 / fps: 32 / cfg: 1.0"
 echo "=============================="
